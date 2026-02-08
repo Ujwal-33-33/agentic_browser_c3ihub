@@ -1,0 +1,16 @@
+# Ollama-Powered Agentic Browser - Dependencies
+
+# Core browser automation
+playwright>=1.40.0
+
+# OpenAI-compatible client (for Ollama)
+openai>=1.0.0
+
+# Environment variable management
+python-dotenv>=1.0.0
+
+# Optional: Additional security libraries (uncomment as needed)
+# beautifulsoup4>=4.12.0  # For HTML parsing
+# lxml>=4.9.0             # For fast XML/HTML processing
+# regex>=2023.0.0         # For advanced regex patterns
+streamlit

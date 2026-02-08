@@ -1,0 +1,30 @@
+# Environment variables
+.env
+
+# Python
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+*.log
+
+# Tests and Documentation (not pushed to GitHub)
+tests/
+docs/
+downloads/
+
+# Screenshots and generated files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
