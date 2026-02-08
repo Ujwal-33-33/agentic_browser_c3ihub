@@ -1,27 +1,24 @@
 """
-Production-Ready Agentic Browser
-================================
-A robust browser automation agent with:
-- Regex-based JSON extraction (handles conversational LLM output)
-- Action history (last 5 steps) to prevent loops
-- Action verification (detects NO_EFFECT)
-- Comprehensive error recovery
-- Security Layer Integration
-- SoM-based element targeting
+OllamaAgent - Production-Grade Agentic Browser
+===============================================
+Robust browser automation agent with:
+- State-aware architecture (action history)
+- Regex-based JSON extraction
+- Strict system prompt with JSON schema
+- Observe → Think → Act → Verify loop
+- Security integration
 
 Author: Secure Agentic Browser Project
 """
 
 import asyncio
-import base64
 import hashlib
 import json
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 from openai import AsyncOpenAI
@@ -34,7 +31,6 @@ from security import SecurityEngine
 from browser_sense import BrowserIntelliSense
 from distiller import DOMDistiller
 
-# Load environment variables
 load_dotenv()
 
 # =============================================================================
@@ -47,113 +43,104 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Ollama configuration
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3")
 
+
 # =============================================================================
-# SYSTEM PROMPT - Strict JSON Schema
+# STRICT SYSTEM PROMPT
 # =============================================================================
 
-SYSTEM_PROMPT = """You are a browser automation agent. You control a web browser to complete tasks.
+SYSTEM_PROMPT = """You are a precise browser automation agent.
 
-**CURRENT CONTEXT:**
-- URL: {current_url}
-- Goal: {user_goal}
+GOAL: {goal}
+CURRENT URL: {url}
+HISTORY: {history}
 
-**PREVIOUS ACTIONS:**
-{history_context}
+PAGE ELEMENTS:
+{dom_tree}
 
-**AVAILABLE ELEMENTS:**
-Use the numbered IDs [1], [2], etc. to refer to elements.
-{elements_context}
+RULES:
+1. You must output VALID JSON only. No conversation, no explanation.
+2. If you are stuck, use the 'scroll_down' action to see more elements.
+3. If you see a popup or cookie banner, close it first.
+4. Do NOT repeat actions that already failed.
+5. Use the exact element IDs from the PAGE ELEMENTS list.
 
-**OUTPUT FORMAT - STRICT JSON ONLY:**
-You MUST respond with valid JSON only. No markdown, no explanation, no text before or after.
-
+RESPONSE FORMAT (JSON ONLY):
 {{
-    "thought": "Brief reasoning about what to do next",
-    "action": "click" | "type" | "navigate" | "scroll" | "wait" | "done",
-    "target_id": 12,
-    "text": "text to type (for type action)",
-    "url": "https://... (for navigate action)"
+  "thought": "Brief reasoning of what to do next",
+  "action": "click" | "type" | "scroll_down" | "scroll_up" | "wait" | "done",
+  "target_id": 12,
+  "value": "search query"
 }}
 
-**ACTION TYPES:**
+ACTION TYPES:
 - click: Click element by target_id
-- type: Type text into element (requires target_id and text)
-- navigate: Go to URL (requires url)
-- scroll: Scroll the page
-- wait: Wait 2 seconds
-- done: Goal achieved
+- type: Type text into element (requires target_id and value)
+- scroll_down: Scroll page down to see more
+- scroll_up: Scroll page up
+- wait: Wait for page to load
+- done: Goal is achieved
 
-**CRITICAL RULES:**
-1. Output ONLY valid JSON - nothing else
-2. Use target_id from the element list [1], [2], etc.
-3. If an action failed, try a DIFFERENT approach
-4. Do NOT repeat failed actions
-5. Use "done" when the goal is achieved
-"""
+CRITICAL: Output ONLY the JSON object. No other text."""
 
 
 # =============================================================================
 # DATA STRUCTURES
 # =============================================================================
 
-class ActionType(Enum):
-    """Supported browser actions."""
-    CLICK = "click"
-    TYPE = "type"
-    NAVIGATE = "navigate"
-    SCROLL = "scroll"
-    WAIT = "wait"
-    DONE = "done"
-
-
 @dataclass
-class ActionRecord:
-    """Record of an action attempt for history."""
+class StepRecord:
+    """Record of a single step for state memory."""
     step: int
     action: str
     target: str
-    result: str  # "SUCCESS", "FAILED: reason", "NO_EFFECT"
+    result: str  # "URL changed to /search", "Typed 'query'", "FAILED: reason"
+    
+    def to_dict(self) -> Dict:
+        return {
+            "step": self.step,
+            "action": f"{self.action} {self.target}".strip(),
+            "result": self.result
+        }
     
     def __str__(self) -> str:
-        if "SUCCESS" in self.result:
-            return f"Step {self.step}: {self.action} {self.target} → ✓"
-        elif "NO_EFFECT" in self.result:
-            return f"Step {self.step}: {self.action} {self.target} → (no change)"
-        else:
-            return f"Step {self.step}: {self.action} {self.target} → ✗ {self.result}"
+        return f"Step {self.step}: {self.action} {self.target} → {self.result}"
 
 
 # =============================================================================
-# AGENTIC BROWSER - Production Ready
+# OLLAMA AGENT - Main Class
 # =============================================================================
 
-class AgenticBrowser:
+class OllamaAgent:
     """
-    Production-ready browser agent with:
+    Production-grade browser automation agent.
+    
+    Features:
+    - State memory (action history)
     - Robust JSON extraction
-    - Action history
     - Action verification
-    - Comprehensive error handling
+    - Security integration
+    - Debug mode with highlighting
     """
     
     def __init__(
         self,
         model: str = OLLAMA_MODEL,
         headless: bool = False,
-        max_iterations: int = 15,
-        enable_security: bool = True
+        max_iterations: int = 20,
+        enable_security: bool = True,
+        debug_mode: bool = False
     ):
-        """Initialize the agentic browser."""
+        """Initialize the agent."""
         self.model = model
         self.headless = headless
         self.max_iterations = max_iterations
+        self.debug_mode = debug_mode
         
-        # Action history (last 5)
-        self.history: List[ActionRecord] = []
+        # State Memory: Action history
+        self.history: List[StepRecord] = []
         
         # Ollama client
         self.client = AsyncOpenAI(
@@ -163,7 +150,7 @@ class AgenticBrowser:
         
         # Modules
         self.security = SecurityEngine(enabled=enable_security)
-        self.som = BrowserIntelliSense()
+        self.som = BrowserIntelliSense(debug_mode=debug_mode)
         self.distiller = DOMDistiller()
         
         # Browser state
@@ -172,11 +159,10 @@ class AgenticBrowser:
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         
-        # Tracking
-        self._current_step = 0
-        self._last_page_hash = ""
+        # Step counter
+        self._step = 0
         
-        logger.info(f"AgenticBrowser initialized (model={model}, security={enable_security})")
+        logger.info(f"OllamaAgent initialized (model={model}, debug={debug_mode})")
     
     # =========================================================================
     # BROWSER LIFECYCLE
@@ -199,20 +185,20 @@ class AgenticBrowser:
             if self._playwright:
                 await self._playwright.stop()
         except Exception as e:
-            logger.warning(f"Browser stop warning: {e}")
+            logger.warning(f"Stop warning: {e}")
         logger.info("Browser stopped")
     
     # =========================================================================
-    # ROBUST JSON EXTRACTION (Critical Fix #1)
+    # JSON EXTRACTION (Robust)
     # =========================================================================
     
-    def _extract_json(self, response_text: str) -> Tuple[Optional[Dict], str]:
+    def extract_json_from_text(self, response_text: str) -> Tuple[Optional[Dict], str]:
         """
-        Extract JSON from LLM response using regex.
+        Extract JSON from LLM response using multiple strategies.
         
         Handles:
-        - Pure JSON responses
-        - JSON wrapped in markdown
+        - Pure JSON
+        - JSON in markdown code blocks
         - JSON with conversational text before/after
         
         Returns:
@@ -221,63 +207,56 @@ class AgenticBrowser:
         if not response_text:
             return None, "FORMAT_ERROR: Empty response"
         
-        # Clean the response
         text = response_text.strip()
         
-        # Try 1: Direct JSON parsing
+        # Strategy 1: Direct parse
         try:
             return json.loads(text), ""
         except json.JSONDecodeError:
             pass
         
-        # Try 2: Remove markdown code blocks
+        # Strategy 2: Extract from markdown
         if "```" in text:
-            # Extract content between code blocks
-            match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
+            match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
             if match:
                 try:
                     return json.loads(match.group(1)), ""
                 except json.JSONDecodeError:
                     pass
         
-        # Try 3: Find JSON object with regex
-        # Look for { ... } pattern
+        # Strategy 3: Regex for JSON object
         json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
         matches = re.findall(json_pattern, text, re.DOTALL)
         
         for match in matches:
             try:
                 parsed = json.loads(match)
-                # Validate it has expected keys
                 if 'action' in parsed:
-                    logger.debug(f"Extracted JSON via regex: {match[:100]}")
                     return parsed, ""
             except json.JSONDecodeError:
                 continue
         
-        # Try 4: More aggressive extraction - find first { and last }
-        first_brace = text.find('{')
-        last_brace = text.rfind('}')
+        # Strategy 4: First { to last }
+        first = text.find('{')
+        last = text.rfind('}')
         
-        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-            json_candidate = text[first_brace:last_brace + 1]
+        if first != -1 and last > first:
             try:
-                parsed = json.loads(json_candidate)
+                parsed = json.loads(text[first:last + 1])
                 if 'action' in parsed:
                     return parsed, ""
             except json.JSONDecodeError:
                 pass
         
-        # All attempts failed
-        logger.warning(f"Failed to extract JSON from: {text[:200]}")
-        return None, f"FORMAT_ERROR: Could not parse JSON from response"
+        logger.warning(f"Failed to extract JSON: {text[:100]}")
+        return None, "FORMAT_ERROR: Could not parse JSON"
     
     # =========================================================================
-    # ACTION HISTORY (Critical Fix #2)
+    # STATE MEMORY
     # =========================================================================
     
     def _format_history(self) -> str:
-        """Format action history for the prompt."""
+        """Format history for the system prompt."""
         if not self.history:
             return "No previous actions."
         
@@ -287,121 +266,82 @@ class AgenticBrowser:
         
         return "\n".join(lines)
     
-    def _add_to_history(
-        self,
-        action: str,
-        target: str,
-        result: str
-    ) -> None:
-        """Add an action to history."""
-        self._current_step += 1
-        record = ActionRecord(
-            step=self._current_step,
+    def _add_to_history(self, action: str, target: str, result: str) -> None:
+        """Add step to history."""
+        self._step += 1
+        record = StepRecord(
+            step=self._step,
             action=action,
             target=target,
             result=result
         )
         self.history.append(record)
         
-        # Keep only last 5
+        # Keep last 5
         if len(self.history) > 5:
             self.history = self.history[-5:]
-    
-    # =========================================================================
-    # ACTION VERIFICATION (Critical Fix #3)
-    # =========================================================================
-    
-    async def _get_page_state(self) -> Tuple[str, str]:
-        """Get current URL and content hash for verification."""
-        try:
-            url = self._page.url
-            content = await self._page.evaluate(
-                "() => document.body.innerText.slice(0, 3000)"
-            )
-            content_hash = hashlib.md5(content.encode()).hexdigest()[:12]
-            return url, content_hash
-        except Exception:
-            return "", ""
-    
-    async def _verify_action_effect(
-        self,
-        before_url: str,
-        before_hash: str
-    ) -> bool:
-        """Check if the action had any effect on the page."""
-        # Wait for potential changes
-        await self._page.wait_for_timeout(2000)
-        
-        after_url, after_hash = await self._get_page_state()
-        
-        # Check if anything changed
-        url_changed = after_url != before_url
-        content_changed = after_hash != before_hash
-        
-        return url_changed or content_changed
     
     # =========================================================================
     # OBSERVE PHASE
     # =========================================================================
     
-    async def _observe(self) -> Tuple[str, Dict[int, Any], str]:
+    async def observe(self) -> Tuple[str, Dict[int, Any], str]:
         """
         Observe the current page state.
         
         Returns:
             Tuple of (elements_text, element_map, error)
         """
+        logger.info("📷 OBSERVE")
+        
         try:
-            # Inject SoM tags
+            # Inject SoM
             num_elements, error = await self.som.inject_script(self._page)
             if error:
-                logger.warning(f"SoM injection error: {error}")
+                logger.warning(f"SoM error: {error}")
             
-            # Get element map and text
+            # Get observation
             element_map, elements_text, error = await self.som.get_observation(self._page)
+            
             if error:
-                logger.warning(f"Observation error: {error}")
                 return "", {}, error
             
+            logger.info(f"   Found {len(element_map)} elements")
             return elements_text, element_map, ""
             
         except Exception as e:
-            error = f"OBSERVE_ERROR: {str(e)[:100]}"
-            logger.error(error)
-            return "", {}, error
+            return "", {}, f"OBSERVE_ERROR: {str(e)[:100]}"
     
     # =========================================================================
     # THINK PHASE
     # =========================================================================
     
-    async def _think(
+    async def think(
         self,
         goal: str,
         elements_text: str,
         last_error: Optional[str] = None
     ) -> Tuple[Optional[Dict], str]:
         """
-        Query LLM to get next action.
+        Query LLM for next action.
         
         Returns:
             Tuple of (action_dict, error)
         """
-        # Build prompt
+        logger.info("🧠 THINK")
+        
+        # Build history with last error
         history_context = self._format_history()
-        
-        # Add last error to history context if present
         if last_error:
-            history_context += f"\n⚠️ LAST ACTION FAILED: {last_error}"
+            history_context += f"\n⚠️ LAST ERROR: {last_error}"
         
+        # Build prompt
         prompt = SYSTEM_PROMPT.format(
-            current_url=self._page.url,
-            user_goal=goal,
-            history_context=history_context,
-            elements_context=elements_text[:3000] or "No elements found"
+            goal=goal,
+            url=self._page.url,
+            history=history_context,
+            dom_tree=elements_text[:4000] or "No elements found"
         )
-        
-        # Sanitize for security
-        secured_elements = self.security.sanitize_and_wrap(elements_text)
         
         try:
             response = await self.client.chat.completions.create(
@@ -415,15 +355,16 @@ class AgenticBrowser:
             )
             
             response_text = response.choices[0].message.content.strip()
-            logger.debug(f"LLM response: {response_text[:200]}")
+            logger.debug(f"LLM response: {response_text[:150]}")
             
             # Extract JSON
-            action_dict, error = self._extract_json(response_text)
+            action_dict, error = self.extract_json_from_text(response_text)
             
-            if error:
-                return None, error
+            if action_dict:
+                thought = action_dict.get('thought', '')[:60]
+                logger.info(f"   Thought: {thought}")
             
-            return action_dict, ""
+            return action_dict, error
             
         except Exception as e:
             return None, f"LLM_ERROR: {str(e)[:100]}"
@@ -432,189 +373,220 @@ class AgenticBrowser:
     # ACT PHASE
     # =========================================================================
     
-    async def _act(
+    async def act(
         self,
         action_dict: Dict,
         element_map: Dict[int, Any]
     ) -> Tuple[bool, str]:
         """
-        Execute an action with verification.
+        Execute the action.
         
         Returns:
             Tuple of (success, result_message)
         """
+        logger.info("⚡ ACT")
+        
         action_type = action_dict.get('action', 'unknown')
         target_id = action_dict.get('target_id')
+        value = action_dict.get('value', '')
         
-        # Capture state before action
-        before_url, before_hash = await self._get_page_state()
+        logger.info(f"   Action: {action_type}, Target: {target_id}, Value: {value[:20] if value else ''}")
         
-        # Security check
-        if action_type in ['navigate']:
-            url = action_dict.get('url', '')
-            risk, reason = self.security.calculate_risk(action_dict, url)
-            
+        # Security check for navigation
+        if action_type == 'navigate':
+            url = action_dict.get('url') or value
+            risk, reason = self.security.calculate_risk(
+                {'action': 'navigate', 'value': url}, url
+            )
             if risk >= 90:
-                return False, f"BLOCKED: {reason} (Risk: {risk})"
-            elif risk >= 40:
-                logger.warning(f"⚠️ High risk action: {reason}")
+                return False, f"BLOCKED: {reason}"
         
-        # Get element info for type actions (credential check)
-        if action_type == 'type' and target_id:
-            elem_info = self.som.get_element_info(int(target_id))
-            if elem_info:
-                risk, reason = self.security.calculate_risk(
-                    action_dict, self._page.url, elem_info
-                )
-                if risk >= 90:
-                    return False, f"BLOCKED: {reason} (Risk: {risk})"
-        
-        # Execute action
+        # Execute via SoM
         success, message = await self.som.execute_action(
             self._page,
             action_dict,
-            element_map
+            element_map,
+            debug=self.debug_mode
         )
         
-        if not success:
-            return False, message
-        
-        # Verify action had effect
-        had_effect = await self._verify_action_effect(before_url, before_hash)
-        
-        if not had_effect and action_type in ['click', 'type']:
-            return True, f"{message} (NO_EFFECT: page unchanged)"
-        
-        return True, message
+        return success, message
     
     # =========================================================================
-    # MAIN LOOP
+    # VERIFY PHASE
+    # =========================================================================
+    
+    async def verify(
+        self,
+        before_url: str,
+        before_hash: str
+    ) -> Tuple[bool, str]:
+        """
+        Verify if the action had an effect.
+        
+        Returns:
+            Tuple of (page_changed, verification_message)
+        """
+        logger.info("🔍 VERIFY")
+        
+        # Wait for page to settle
+        await self._page.wait_for_load_state('domcontentloaded')
+        
+        after_url = self._page.url
+        after_hash = await self.som.get_page_hash(self._page)
+        
+        url_changed = after_url != before_url
+        content_changed = after_hash != before_hash
+        
+        if url_changed:
+            logger.info(f"   ✓ URL changed: {before_url} → {after_url}")
+            return True, f"URL changed to {after_url}"
+        elif content_changed:
+            logger.info("   ✓ Page content changed")
+            return True, "Page content updated"
+        else:
+            logger.info("   ⚠ No visible change detected")
+            return False, "NO_EFFECT"
+    
+    # =========================================================================
+    # MAIN LOOP: Observe → Think → Act → Verify
     # =========================================================================
     
     async def run(self, goal: str, start_url: str = "https://www.google.com") -> bool:
         """
         Run the agent to achieve the goal.
         
+        Args:
+            goal: Natural language goal
+            start_url: Starting URL
+            
         Returns:
-            bool: True if goal was achieved
+            True if goal achieved
         """
-        logger.info(f"Starting agent with goal: {goal}")
+        logger.info(f"{'='*60}")
+        logger.info(f"STARTING AGENT")
+        logger.info(f"Goal: {goal}")
+        logger.info(f"{'='*60}")
         
         await self.start()
         
         try:
-            # Navigate to start URL
+            # Navigate to start
             await self._page.goto(start_url, wait_until="domcontentloaded")
-            await self._page.wait_for_timeout(2000)
+            await self._page.wait_for_load_state('networkidle', timeout=5000)
             
             last_error: Optional[str] = None
             
             for iteration in range(self.max_iterations):
-                logger.info(f"\n{'='*60}")
+                logger.info(f"\n{'─'*40}")
                 logger.info(f"ITERATION {iteration + 1}/{self.max_iterations}")
-                logger.info(f"{'='*60}")
+                logger.info(f"{'─'*40}")
                 
-                # ============================================================
-                # OBSERVE
-                # ============================================================
-                logger.info("📷 OBSERVE")
-                elements_text, element_map, obs_error = await self._observe()
+                # Capture state before
+                before_url = self._page.url
+                before_hash = await self.som.get_page_hash(self._page)
+                
+                # ======== OBSERVE ========
+                elements_text, element_map, obs_error = await self.observe()
                 
                 if obs_error:
-                    logger.warning(f"Observation error: {obs_error}")
                     last_error = obs_error
                     continue
                 
-                logger.info(f"   Found {len(element_map)} interactive elements")
-                
-                # ============================================================
-                # THINK
-                # ============================================================
-                logger.info("🧠 THINK")
-                action_dict, think_error = await self._think(
+                # ======== THINK ========
+                action_dict, think_error = await self.think(
                     goal=goal,
                     elements_text=elements_text,
                     last_error=last_error
                 )
                 
                 if think_error:
-                    logger.warning(f"Think error: {think_error}")
                     self._add_to_history("think", "", f"FAILED: {think_error}")
                     last_error = think_error
                     continue
                 
-                thought = action_dict.get('thought', '')
                 action_type = action_dict.get('action', 'unknown')
                 target_id = action_dict.get('target_id', '')
                 
-                logger.info(f"   Thought: {thought[:80]}")
-                logger.info(f"   Action: {action_type} (target: {target_id})")
-                
-                # Check if done
+                # Check for done
                 if action_type == 'done':
-                    logger.info("✅ GOAL ACHIEVED!")
-                    self._add_to_history("done", "", "SUCCESS")
+                    logger.info("\n✅ GOAL ACHIEVED!")
+                    self._add_to_history("done", "", "Goal complete")
                     return True
                 
-                # ============================================================
-                # ACT
-                # ============================================================
-                logger.info("⚡ ACT")
-                success, result = await self._act(action_dict, element_map)
+                # ======== ACT ========
+                success, result = await self.act(action_dict, element_map)
                 
                 target_str = f"#{target_id}" if target_id else ""
                 
-                if success:
-                    logger.info(f"   ✓ {result}")
-                    
-                    if "NO_EFFECT" in result:
-                        self._add_to_history(action_type, target_str, "NO_EFFECT")
-                        last_error = "Action had no effect on the page"
-                    else:
-                        self._add_to_history(action_type, target_str, "SUCCESS")
-                        last_error = None
-                else:
-                    logger.warning(f"   ✗ {result}")
+                if not success:
                     self._add_to_history(action_type, target_str, f"FAILED: {result}")
                     last_error = result
+                    logger.warning(f"   ✗ {result}")
+                    continue
+                
+                # ======== VERIFY ========
+                page_changed, verify_msg = await self.verify(before_url, before_hash)
+                
+                if page_changed:
+                    self._add_to_history(action_type, target_str, verify_msg)
+                    last_error = None
+                else:
+                    self._add_to_history(action_type, target_str, "NO_EFFECT")
+                    last_error = "Action had no visible effect"
                 
                 # Cleanup overlays
                 await self.som.cleanup(self._page)
-                
-                # Brief pause
-                await self._page.wait_for_timeout(500)
             
-            logger.warning(f"Max iterations ({self.max_iterations}) reached")
+            logger.warning(f"\n⚠ Max iterations ({self.max_iterations}) reached")
             return False
             
         except Exception as e:
             logger.error(f"Agent error: {e}")
+            import traceback
+            traceback.print_exc()
             return False
         finally:
             await self.stop()
 
 
 # =============================================================================
-# MAIN
+# CONVENIENCE ALIAS
+# =============================================================================
+
+# Alias for backward compatibility
+AgenticBrowser = OllamaAgent
+
+
+# =============================================================================
+# CLI ENTRY
 # =============================================================================
 
 async def main():
-    """Example usage."""
-    agent = AgenticBrowser(
-        model="llama3",
+    """CLI entry point."""
+    import sys
+    
+    # Default goal
+    goal = "Search for 'Python programming' on Wikipedia"
+    start_url = "https://en.wikipedia.org"
+    
+    # Parse args
+    if len(sys.argv) > 1:
+        goal = sys.argv[1]
+    if len(sys.argv) > 2:
+        start_url = sys.argv[2]
+    
+    agent = OllamaAgent(
+        model=OLLAMA_MODEL,
         headless=False,
         max_iterations=15,
-        enable_security=True
+        debug_mode=True
     )
     
-    success = await agent.run(
-        goal="Search for 'Python programming' on Wikipedia",
-        start_url="https://en.wikipedia.org"
-    )
+    success = await agent.run(goal=goal, start_url=start_url)
     
     print(f"\n{'='*60}")
-    print(f"Agent finished: {'SUCCESS' if success else 'INCOMPLETE'}")
-    print(f"{'='*60}\n")
+    print(f"Result: {'✅ SUCCESS' if success else '❌ INCOMPLETE'}")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,11 @@
 """
-BrowserIntelliSense - Set-of-Mark (SoM) Implementation
-======================================================
+BrowserIntelliSense - Production-Grade SoM Implementation
+=========================================================
 Robust implementation with:
+- Overlap detection (skip covered elements)
+- Debug highlighting (red box before click)
+- Smart waits (networkidle instead of static timeouts)
 - Safe Playwright execution (no crashes)
-- Error strings returned instead of exceptions
-- Timeout handling
 
 Author: Secure Agentic Browser Project
 """
@@ -18,7 +19,7 @@ from playwright._impl._errors import TimeoutError as PlaywrightTimeoutError
 logger = logging.getLogger(__name__)
 
 
-# JavaScript code to inject into the page for element tagging
+# JavaScript for SoM tagging with OVERLAP DETECTION
 TAGGING_SCRIPT = """
 (function() {
     // Remove any existing tags
@@ -31,48 +32,70 @@ TAGGING_SCRIPT = """
     // Find all interactive elements
     const selectors = [
         'a[href]',
-        'button',
-        'input',
-        'textarea',
-        'select',
+        'button:not([disabled])',
+        'input:not([type="hidden"]):not([disabled])',
+        'textarea:not([disabled])',
+        'select:not([disabled])',
         '[onclick]',
         '[role="button"]',
         '[role="link"]',
         '[role="textbox"]',
+        '[role="searchbox"]',
         '[tabindex]:not([tabindex="-1"])'
     ];
     
     const allElements = document.querySelectorAll(selectors.join(','));
     
-    // Filter visible elements and assign IDs
+    // Helper: Check if element is covered by another element (overlap detection)
+    function isElementCovered(elem) {
+        const rect = elem.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        
+        // Get element at center point
+        const topElement = document.elementFromPoint(centerX, centerY);
+        
+        if (!topElement) return true;  // Off-screen
+        
+        // Check if the element at point is the target or a descendant
+        return !elem.contains(topElement) && !topElement.contains(elem) && topElement !== elem;
+    }
+    
+    // Filter visible, non-covered elements and assign IDs
     const elements = [];
     let idCounter = 1;
     
     allElements.forEach(elem => {
-        // Check if element is visible
         const style = window.getComputedStyle(elem);
         const rect = elem.getBoundingClientRect();
         
+        // Visibility checks
         const isVisible = (
             style.display !== 'none' &&
             style.visibility !== 'hidden' &&
             style.opacity !== '0' &&
-            rect.width > 0 &&
-            rect.height > 0 &&
+            rect.width > 5 &&
+            rect.height > 5 &&
             rect.top < window.innerHeight &&
             rect.bottom > 0 &&
             rect.left < window.innerWidth &&
             rect.right > 0
         );
         
-        if (isVisible) {
-            elem.setAttribute('data-agent-id', idCounter);
-            elements.push({
-                id: idCounter,
-                element: elem
-            });
-            idCounter++;
+        if (!isVisible) return;
+        
+        // OVERLAP DETECTION: Skip if covered by popup/modal
+        if (isElementCovered(elem)) {
+            console.log('Skipping covered element:', elem);
+            return;
         }
+        
+        elem.setAttribute('data-agent-id', idCounter);
+        elements.push({
+            id: idCounter,
+            element: elem
+        });
+        idCounter++;
     });
     
     // Create visual overlays
@@ -81,27 +104,28 @@ TAGGING_SCRIPT = """
         const id = item.id;
         const rect = elem.getBoundingClientRect();
         
-        // Create overlay container
         const overlay = document.createElement('div');
         overlay.setAttribute('data-agent-tag', 'true');
-        overlay.style.position = 'fixed';
-        overlay.style.left = rect.left + 'px';
-        overlay.style.top = rect.top + 'px';
-        overlay.style.width = '24px';
-        overlay.style.height = '20px';
-        overlay.style.backgroundColor = '#FF0000';
-        overlay.style.color = '#FFFFFF';
-        overlay.style.border = '1px solid #FFFFFF';
-        overlay.style.borderRadius = '3px';
-        overlay.style.fontSize = '12px';
-        overlay.style.fontWeight = 'bold';
-        overlay.style.fontFamily = 'Arial, sans-serif';
-        overlay.style.display = 'flex';
-        overlay.style.alignItems = 'center';
-        overlay.style.justifyContent = 'center';
-        overlay.style.zIndex = '999999';
-        overlay.style.pointerEvents = 'none';
-        overlay.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
+        overlay.style.cssText = `
+            position: fixed;
+            left: ${rect.left}px;
+            top: ${rect.top}px;
+            width: 22px;
+            height: 18px;
+            background-color: #FF0000;
+            color: #FFFFFF;
+            border: 1px solid #FFFFFF;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: bold;
+            font-family: Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 999999;
+            pointer-events: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        `;
         overlay.textContent = id.toString();
         
         document.body.appendChild(overlay);
@@ -112,72 +136,113 @@ TAGGING_SCRIPT = """
 """
 
 
+# JavaScript for highlighting element before action
+HIGHLIGHT_SCRIPT = """
+(selector) => {
+    // Remove existing highlights
+    const existing = document.querySelectorAll('[data-agent-highlight="true"]');
+    existing.forEach(h => h.remove());
+    
+    const elem = document.querySelector(selector);
+    if (!elem) return false;
+    
+    const rect = elem.getBoundingClientRect();
+    
+    // Create red box highlight
+    const highlight = document.createElement('div');
+    highlight.setAttribute('data-agent-highlight', 'true');
+    highlight.style.cssText = `
+        position: fixed;
+        left: ${rect.left - 3}px;
+        top: ${rect.top - 3}px;
+        width: ${rect.width + 6}px;
+        height: ${rect.height + 6}px;
+        border: 3px solid #FF0000;
+        border-radius: 4px;
+        background: rgba(255, 0, 0, 0.1);
+        z-index: 999998;
+        pointer-events: none;
+        animation: pulse 0.5s ease-in-out 2;
+    `;
+    
+    // Add animation
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    `;
+    document.head.appendChild(style);
+    
+    document.body.appendChild(highlight);
+    
+    // Auto-remove after 2 seconds
+    setTimeout(() => highlight.remove(), 2000);
+    
+    return true;
+}
+"""
+
+
 class BrowserIntelliSense:
     """
-    Implements the Set-of-Mark (SoM) approach for web interaction.
+    Production-grade Set-of-Mark (SoM) implementation.
     
     Features:
-    - Robust error handling (returns error strings, doesn't crash)
-    - Page content hashing for change detection
-    - Safe Playwright execution
+    - Overlap detection (skips covered elements)
+    - Debug highlighting (red box before actions)
+    - Smart waits (networkidle)
+    - Robust error handling
     """
     
-    def __init__(self):
+    def __init__(self, debug_mode: bool = False):
         self.element_map: Dict[int, Locator] = {}
         self.element_info: List[Dict] = []
+        self.debug_mode = debug_mode
         self._last_content_hash: Optional[str] = None
-        logger.info("BrowserIntelliSense initialized")
+        logger.info(f"BrowserIntelliSense initialized (debug={debug_mode})")
     
     async def inject_script(self, page: Page) -> Tuple[int, str]:
         """
-        Inject the tagging script into the page.
+        Inject SoM tagging script with overlap detection.
         
         Returns:
             Tuple of (num_elements, error_message)
-            If successful, error_message is empty string.
         """
         logger.info("Injecting Set-of-Mark script...")
         
         try:
+            # Wait for page to be stable
+            await page.wait_for_load_state('domcontentloaded')
+            
             num_elements = await page.evaluate(TAGGING_SCRIPT)
-            await page.wait_for_timeout(100)
-            logger.info(f"Tagged {num_elements} interactive elements")
+            logger.info(f"Tagged {num_elements} interactive elements (overlap-filtered)")
             return num_elements, ""
             
         except PlaywrightTimeoutError:
-            error = "TIMEOUT: Script injection timed out"
-            logger.error(error)
-            return 0, error
+            return 0, "TIMEOUT: Script injection timed out"
         except Exception as e:
-            error = f"SCRIPT_ERROR: {str(e)[:100]}"
-            logger.error(error)
-            return 0, error
+            return 0, f"SCRIPT_ERROR: {str(e)[:100]}"
     
     async def get_observation(self, page: Page) -> Tuple[Dict[int, Locator], str, str]:
         """
-        Get the observation data from the page.
+        Get observation data from tagged elements.
         
         Returns:
-            Tuple containing:
-            - element_map: Dict mapping ID -> Playwright Locator
-            - element_text: Clean text listing of elements
-            - error: Error message (empty if successful)
+            Tuple of (element_map, element_text, error)
         """
         logger.info("Extracting observation data...")
         
-        # Clear previous mappings
         self.element_map = {}
         self.element_info = []
         
         try:
-            # Get all tagged elements
             tagged_elements = await page.query_selector_all('[data-agent-id]')
-            
             element_lines = []
             
             for elem in tagged_elements:
                 try:
-                    # Get the ID
                     elem_id = await elem.get_attribute('data-agent-id')
                     if not elem_id:
                         continue
@@ -185,37 +250,27 @@ class BrowserIntelliSense:
                     elem_id = int(elem_id)
                     
                     # Get element info
-                    tag_name = await elem.evaluate('el => el.tagName.toLowerCase()')
-                    text_content = await elem.evaluate(
-                        'el => (el.innerText || el.value || el.placeholder || "").trim()'
-                    )
-                    elem_type = await elem.get_attribute('type') or tag_name
-                    href = await elem.get_attribute('href') or ''
-                    
-                    # Truncate long text
-                    if len(text_content) > 50:
-                        text_content = text_content[:47] + "..."
+                    info = await page.evaluate("""(el) => {
+                        return {
+                            tag: el.tagName.toLowerCase(),
+                            type: el.getAttribute('type') || el.tagName.toLowerCase(),
+                            text: (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().slice(0, 50),
+                            href: el.getAttribute('href') || '',
+                            name: el.getAttribute('name') || '',
+                            id: el.id || ''
+                        };
+                    }""", elem)
                     
                     # Store locator
                     self.element_map[elem_id] = page.locator(f'[data-agent-id="{elem_id}"]')
                     
                     # Store info
-                    info = {
-                        'id': elem_id,
-                        'type': elem_type,
-                        'tag': tag_name,
-                        'text': text_content,
-                        'href': href
-                    }
+                    info['elem_id'] = elem_id
                     self.element_info.append(info)
                     
                     # Create text line
-                    if text_content:
-                        line = f"[{elem_id}] {elem_type}: \"{text_content}\""
-                    else:
-                        line = f"[{elem_id}] {elem_type}"
-                    
-                    element_lines.append(line)
+                    text_part = f': "{info["text"]}"' if info['text'] else ''
+                    element_lines.append(f"[{elem_id}] {info['type']}{text_part}")
                     
                 except Exception as e:
                     logger.warning(f"Failed to extract element: {e}")
@@ -227,77 +282,100 @@ class BrowserIntelliSense:
             return self.element_map, element_text, ""
             
         except Exception as e:
-            error = f"OBSERVATION_ERROR: {str(e)[:100]}"
-            logger.error(error)
-            return {}, "", error
+            return {}, "", f"OBSERVATION_ERROR: {str(e)[:100]}"
+    
+    async def highlight_element(self, page: Page, elem_id: int) -> bool:
+        """
+        Draw red box around element before clicking (debug mode).
+        
+        Args:
+            page: Playwright Page
+            elem_id: Element ID to highlight
+            
+        Returns:
+            True if highlighted successfully
+        """
+        try:
+            selector = f'[data-agent-id="{elem_id}"]'
+            result = await page.evaluate(HIGHLIGHT_SCRIPT, selector)
+            if result:
+                logger.info(f"🔴 Highlighted element #{elem_id}")
+                # Brief pause to show highlight
+                await page.wait_for_timeout(300)
+            return result
+        except Exception as e:
+            logger.warning(f"Highlight failed: {e}")
+            return False
     
     async def execute_action(
         self,
         page: Page,
         action_dict: Dict,
-        element_map: Dict[int, Locator]
+        element_map: Dict[int, Locator],
+        debug: bool = False
     ) -> Tuple[bool, str]:
         """
-        Execute an action with robust error handling.
+        Execute action with robust error handling.
         
+        Args:
+            page: Playwright Page
+            action_dict: Action with 'action', 'target_id', 'value' keys
+            element_map: ID -> Locator mapping
+            debug: If True, highlight element before action
+            
         Returns:
-            Tuple of (success: bool, result_message: str)
-            If failed, result_message contains the specific error.
+            Tuple of (success, result_message)
         """
         action_type = action_dict.get('action', '').lower()
-        element_id = action_dict.get('target_id') or action_dict.get('id')
+        target_id = action_dict.get('target_id') or action_dict.get('id')
         
-        # Handle navigation separately (no element needed)
+        # Handle non-element actions
         if action_type == 'navigate':
             url = action_dict.get('url') or action_dict.get('value', '')
-            if not url:
-                return False, "ERROR: Navigate requires URL"
             return await self._safe_navigate(page, url)
         
-        if action_type == 'scroll':
-            amount = action_dict.get('amount') or action_dict.get('value', 500)
-            return await self._safe_scroll(page, int(amount))
+        if action_type in ['scroll', 'scroll_down']:
+            return await self._safe_scroll(page, 500)
+        
+        if action_type == 'scroll_up':
+            return await self._safe_scroll(page, -500)
         
         if action_type == 'wait':
-            seconds = action_dict.get('seconds') or action_dict.get('value', 2)
-            await page.wait_for_timeout(int(seconds) * 1000)
-            return True, f"Waited {seconds} seconds"
+            return await self._smart_wait(page)
         
         if action_type == 'done':
             return True, "GOAL_COMPLETE"
         
-        # For click/type, we need element_id
-        if element_id is None:
-            return False, "ERROR: No target_id provided for action"
+        # For element actions, need target_id
+        if target_id is None:
+            return False, "ERROR: No target_id provided"
         
-        # Convert to int if string
-        if isinstance(element_id, str):
-            try:
-                element_id = int(element_id)
-            except ValueError:
-                return False, f"ERROR: Invalid target_id '{element_id}'"
+        # Convert to int
+        try:
+            target_id = int(target_id)
+        except (ValueError, TypeError):
+            return False, f"ERROR: Invalid target_id '{target_id}'"
         
         # Get locator
-        if element_id not in element_map:
-            return False, f"ERROR: Element #{element_id} not found (may have disappeared)"
+        if target_id not in element_map:
+            return False, f"ERROR: Element #{target_id} not found"
         
-        locator = element_map[element_id]
+        locator = element_map[target_id]
         
-        # Execute action with robust error handling
+        # Debug highlight
+        if debug or self.debug_mode:
+            await self.highlight_element(page, target_id)
+        
+        # Execute
         if action_type == 'click':
-            return await self._safe_click(page, locator, element_id)
-        
+            return await self._safe_click(page, locator, target_id)
         elif action_type == 'type':
             text = action_dict.get('text') or action_dict.get('value', '')
-            if not text:
-                return False, "ERROR: Type requires text value"
-            return await self._safe_type(page, locator, element_id, text)
-        
+            return await self._safe_type(page, locator, target_id, text)
         elif action_type == 'press_enter':
-            return await self._safe_press_enter(page, locator, element_id)
-        
+            return await self._safe_press_enter(page, locator, target_id)
         else:
-            return False, f"ERROR: Unknown action type '{action_type}'"
+            return False, f"ERROR: Unknown action '{action_type}'"
     
     async def _safe_click(
         self, page: Page, locator: Locator, elem_id: int
@@ -306,127 +384,113 @@ class BrowserIntelliSense:
         try:
             logger.info(f"Clicking element #{elem_id}")
             await locator.click(timeout=5000)
-            await page.wait_for_timeout(500)
-            return True, f"Clicked element #{elem_id}"
+            
+            # Smart wait for page response
+            await self._smart_wait(page)
+            
+            return True, f"Clicked #{elem_id}"
             
         except PlaywrightTimeoutError:
-            return False, f"TIMEOUT: Element #{elem_id} took too long to become clickable"
-        
+            return False, f"TIMEOUT: #{elem_id} not clickable"
         except Exception as e:
             error_str = str(e).lower()
-            
-            # Parse specific Playwright errors
-            if "element is obscured" in error_str or "intercept" in error_str:
-                return False, f"OBSCURED: Element #{elem_id} is hidden behind another element"
-            elif "element is not visible" in error_str:
-                return False, f"INVISIBLE: Element #{elem_id} is not visible on screen"
-            elif "element is detached" in error_str or "target closed" in error_str:
-                return False, f"DETACHED: Element #{elem_id} was removed from the page"
-            elif "element is outside" in error_str:
-                return False, f"OFFSCREEN: Element #{elem_id} is outside the viewport"
+            if "obscured" in error_str or "intercept" in error_str:
+                return False, f"OBSCURED: #{elem_id} is covered by another element"
+            elif "not visible" in error_str:
+                return False, f"INVISIBLE: #{elem_id} not visible"
+            elif "detached" in error_str:
+                return False, f"DETACHED: #{elem_id} was removed"
             else:
-                return False, f"CLICK_ERROR: {str(e)[:80]}"
+                return False, f"CLICK_ERROR: {str(e)[:60]}"
     
     async def _safe_type(
         self, page: Page, locator: Locator, elem_id: int, text: str
     ) -> Tuple[bool, str]:
-        """Type with comprehensive error handling."""
+        """Type with error handling."""
         try:
-            logger.info(f"Typing into element #{elem_id}")
+            logger.info(f"Typing into #{elem_id}")
             await locator.fill(text, timeout=5000)
-            await page.wait_for_timeout(300)
-            return True, f"Typed '{text[:30]}...' into element #{elem_id}"
-            
+            return True, f"Typed '{text[:20]}...' into #{elem_id}"
         except PlaywrightTimeoutError:
-            return False, f"TIMEOUT: Element #{elem_id} not ready for input"
-        
+            return False, f"TIMEOUT: #{elem_id} not ready"
         except Exception as e:
-            error_str = str(e).lower()
-            
-            if "not an input" in error_str or "cannot be edited" in error_str:
-                return False, f"NOT_EDITABLE: Element #{elem_id} is not a text input"
-            elif "element is detached" in error_str:
-                return False, f"DETACHED: Element #{elem_id} was removed from the page"
-            else:
-                return False, f"TYPE_ERROR: {str(e)[:80]}"
+            return False, f"TYPE_ERROR: {str(e)[:60]}"
     
     async def _safe_press_enter(
         self, page: Page, locator: Locator, elem_id: int
     ) -> Tuple[bool, str]:
-        """Press enter with comprehensive error handling."""
+        """Press enter with error handling."""
         try:
-            logger.info(f"Pressing Enter on element #{elem_id}")
+            logger.info(f"Pressing Enter on #{elem_id}")
             await locator.press('Enter', timeout=5000)
-            await page.wait_for_timeout(1000)
-            return True, f"Pressed Enter on element #{elem_id}"
-            
-        except PlaywrightTimeoutError:
-            return False, f"TIMEOUT: Element #{elem_id} not responding"
+            await self._smart_wait(page)
+            return True, f"Pressed Enter on #{elem_id}"
         except Exception as e:
-            return False, f"KEYPRESS_ERROR: {str(e)[:80]}"
+            return False, f"KEYPRESS_ERROR: {str(e)[:60]}"
     
     async def _safe_navigate(self, page: Page, url: str) -> Tuple[bool, str]:
-        """Navigate with comprehensive error handling."""
+        """Navigate with smart wait."""
         try:
             logger.info(f"Navigating to {url}")
             await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(1000)
+            await self._smart_wait(page)
             return True, f"Navigated to {url}"
-            
         except PlaywrightTimeoutError:
-            return False, f"TIMEOUT: Page {url} took too long to load"
+            return False, f"TIMEOUT: {url} took too long"
         except Exception as e:
-            return False, f"NAVIGATION_ERROR: {str(e)[:80]}"
+            return False, f"NAVIGATION_ERROR: {str(e)[:60]}"
     
     async def _safe_scroll(self, page: Page, amount: int) -> Tuple[bool, str]:
         """Scroll with error handling."""
         try:
+            direction = "down" if amount > 0 else "up"
             await page.evaluate(f"window.scrollBy(0, {amount})")
-            await page.wait_for_timeout(500)
-            return True, f"Scrolled {amount}px"
+            await page.wait_for_timeout(300)
+            return True, f"Scrolled {direction}"
         except Exception as e:
-            return False, f"SCROLL_ERROR: {str(e)[:80]}"
+            return False, f"SCROLL_ERROR: {str(e)[:60]}"
+    
+    async def _smart_wait(self, page: Page) -> Tuple[bool, str]:
+        """
+        Smart wait using networkidle instead of static timeout.
+        Falls back to shorter timeout if networkidle takes too long.
+        """
+        try:
+            # Try networkidle with 3s timeout
+            await page.wait_for_load_state('networkidle', timeout=3000)
+            return True, "Page stable"
+        except PlaywrightTimeoutError:
+            # Fall back to short fixed wait
+            await page.wait_for_timeout(500)
+            return True, "Waited (timeout fallback)"
+        except Exception:
+            await page.wait_for_timeout(500)
+            return True, "Waited"
     
     async def get_page_hash(self, page: Page) -> str:
-        """Get a hash of the current page content for change detection."""
+        """Get hash of page content for change detection."""
         try:
-            content = await page.evaluate("() => document.body.innerText.slice(0, 5000)")
+            content = await page.evaluate("() => document.body.innerText.slice(0, 3000)")
             url = page.url
-            hash_input = f"{url}:{content}"
-            return hashlib.md5(hash_input.encode()).hexdigest()[:16]
+            return hashlib.md5(f"{url}:{content}".encode()).hexdigest()[:16]
         except Exception:
             return ""
-    
-    def get_element_text_list(self) -> str:
-        """Get a formatted text list of all elements."""
-        lines = []
-        for info in self.element_info:
-            if info['text']:
-                line = f"[{info['id']}] {info['type']}: \"{info['text']}\""
-            else:
-                line = f"[{info['id']}] {info['type']}"
-            lines.append(line)
-        return "\n".join(lines)
     
     def get_element_info(self, elem_id: int) -> Optional[Dict]:
         """Get element info by ID."""
         for info in self.element_info:
-            if info['id'] == elem_id:
+            if info.get('elem_id') == elem_id:
                 return info
         return None
     
     async def cleanup(self, page: Page) -> None:
-        """Remove all visual overlays from the page."""
+        """Remove all visual overlays."""
         try:
             await page.evaluate("""
                 () => {
-                    const tags = document.querySelectorAll('[data-agent-tag="true"]');
-                    tags.forEach(tag => tag.remove());
-                    
-                    const marked = document.querySelectorAll('[data-agent-id]');
-                    marked.forEach(elem => elem.removeAttribute('data-agent-id'));
+                    document.querySelectorAll('[data-agent-tag], [data-agent-highlight]').forEach(el => el.remove());
+                    document.querySelectorAll('[data-agent-id]').forEach(el => el.removeAttribute('data-agent-id'));
                 }
             """)
-            logger.info("Cleaned up visual overlays")
-        except Exception as e:
-            logger.warning(f"Cleanup warning: {e}")
+        except Exception:
+            pass
