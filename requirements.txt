@@ -1,4 +1,5 @@
-# Ollama-Powered Agentic Browser - Dependencies
+# Secure Agentic Browser - Dependencies
+# ======================================
 
 # Core browser automation
 playwright>=1.40.0
@@ -9,8 +10,17 @@ openai>=1.0.0
 # Environment variable management
 python-dotenv>=1.0.0
 
-# Optional: Additional security libraries (uncomment as needed)
-# beautifulsoup4>=4.12.0  # For HTML parsing
-# lxml>=4.9.0             # For fast XML/HTML processing
-# regex>=2023.0.0         # For advanced regex patterns
-streamlit
+# HTML parsing and security
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# String matching for deceptive UI detection
+# Using standard library difflib (no external dep needed)
+# Optional: python-Levenshtein for faster fuzzy matching
+python-Levenshtein>=0.21.0
+
+# Terminal colors for security alerts
+termcolor>=2.3.0
+
+# Web UI (optional)
+streamlit>=1.28.0
