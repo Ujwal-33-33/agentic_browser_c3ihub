@@ -1,9 +1,3 @@
-"""
-DOM Distiller - Reduce Token Count via Smart DOM Extraction
-============================================================
-Extracts only interactive and meaningful elements from the page
-using JavaScript DOM traversal, reducing tokens from ~50k to <2k.
-"""
 
 from typing import List, Dict
 import logging

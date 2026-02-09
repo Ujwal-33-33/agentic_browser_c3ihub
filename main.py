@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""
-Secure Agentic Browser - Main Entry Point
-==========================================
-Run the OllamaAgent with Observe → Think → Act → Verify loop.
-
-Usage:
-    python main.py "Your goal here" "https://starting-url.com"
-    python main.py --debug "Search Wikipedia for Python"
-    python main.py --headless "Get Google search results for AI"
-
-Author: Secure Agentic Browser Project
-"""
 
 import asyncio
 import argparse
@@ -57,7 +45,7 @@ def print_results(success: bool, agent: OllamaAgent):
 async def run_agent(
     goal: str,
     start_url: str = "https://www.google.com",
-    model: str = "llama3",
+    model: str = "qwen2.5-coder:7b",
     headless: bool = False,
     debug: bool = False,
     max_iterations: int = 15,
@@ -140,8 +128,8 @@ Examples:
     
     parser.add_argument(
         "--model", "-m",
-        default="llama3",
-        help="Ollama model name (default: llama3)"
+        default="qwen2.5-coder:7b",
+        help="Ollama model name (default: qwen2.5-coder:7b)"
     )
     
     parser.add_argument(

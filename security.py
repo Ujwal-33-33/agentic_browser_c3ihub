@@ -1,14 +1,3 @@
-"""
-Security Layer for Agentic Browser
-===================================
-Implements security controls to prevent:
-- Prompt injection attacks
-- Clickjacking/deceptive UI
-- Unauthorized navigation
-- Credential theft
-
-Author: Secure Agentic Browser Project
-"""
 
 import json
 import logging
@@ -221,9 +210,7 @@ class SecurityEngine:
         risk = 0
         reasons = []
         
-        # ================================================================
         # NAVIGATION RISK
-        # ================================================================
         if action_type == 'navigate':
             if not value:
                 return 10, "Navigation without URL"
@@ -241,9 +228,7 @@ class SecurityEngine:
                 risk += 30
                 reasons.append(f"Suspicious protocol: {parsed.scheme}")
         
-        # ================================================================
         # TYPE RISK (Credential Theft)
-        # ================================================================
         elif action_type == 'type':
             # Check if typing into password field
             if element_info:
@@ -260,9 +245,7 @@ class SecurityEngine:
                 risk += 20
                 reasons.append("Unusually long input")
         
-        # ================================================================
         # CLICK RISK
-        # ================================================================
         elif action_type == 'click':
             # Check if clicking download/submit buttons
             if element_info:
@@ -292,16 +275,12 @@ class SecurityEngine:
                         risk += 10
                         reasons.append("Submit button (whitelisted site)")
         
-        # ================================================================
         # SCROLL / WAIT (Low Risk)
-        # ================================================================
         elif action_type in ['scroll', 'wait']:
             risk += 0
             reasons.append("Safe action")
         
-        # ================================================================
         # UNKNOWN ACTION
-        # ================================================================
         else:
             risk += 30
             reasons.append(f"Unknown action type: {action_type}")
@@ -358,9 +337,7 @@ Approve this action? (yes/no)
         return message.strip()
 
 
-# =============================================================================
 # HELPER FUNCTIONS
-# =============================================================================
 
 def create_security_config(
     strict_mode: bool = False,
@@ -389,9 +366,7 @@ def create_security_config(
     return engine
 
 
-# =============================================================================
 # EXAMPLE USAGE
-# =============================================================================
 
 if __name__ == "__main__":
     # Setup logging

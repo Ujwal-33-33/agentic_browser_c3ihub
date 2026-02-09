@@ -1,15 +1,5 @@
-"""
-OllamaAgent - Production-Grade Agentic Browser
-===============================================
-Robust browser automation agent with:
-- State-aware architecture (action history)
-- Regex-based JSON extraction
-- Strict system prompt with JSON schema
-- Observe → Think → Act → Verify loop
-- Security integration
-
-Author: Secure Agentic Browser Project
-"""
+# Agentic browser using Ollama + Playwright
+# Observe -> Think -> Act -> Verify loop
 
 import asyncio
 import hashlib
@@ -33,24 +23,14 @@ from distiller import DOMDistiller
 
 load_dotenv()
 
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b")
 
 
-# =============================================================================
-# STRICT SYSTEM PROMPT
-# =============================================================================
-
+# System prompt for the LLM
 SYSTEM_PROMPT = """You are a precise browser automation agent.
 
 GOAL: {goal}
@@ -66,11 +46,13 @@ RULES:
 3. If you see a popup or cookie banner, close it first.
 4. Do NOT repeat actions that already failed.
 5. Use the exact element IDs from the PAGE ELEMENTS list.
+6. IMPORTANT: If you 'type' into a search box, you usually need to 'press_enter' on the same target_id to submit.
+7. If the URL doesn't change after an action, try a different action (like 'press_enter' or clicking a button).
 
 RESPONSE FORMAT (JSON ONLY):
 {{
   "thought": "Brief reasoning of what to do next",
-  "action": "click" | "type" | "scroll_down" | "scroll_up" | "wait" | "done",
+  "action": "click" | "type" | "press_enter" | "scroll_down" | "scroll_up" | "wait" | "done",
   "target_id": 12,
   "value": "search query"
 }}
@@ -78,6 +60,7 @@ RESPONSE FORMAT (JSON ONLY):
 ACTION TYPES:
 - click: Click element by target_id
 - type: Type text into element (requires target_id and value)
+- press_enter: Press Enter key on element (use after type to submit)
 - scroll_down: Scroll page down to see more
 - scroll_up: Scroll page up
 - wait: Wait for page to load
@@ -86,17 +69,12 @@ ACTION TYPES:
 CRITICAL: Output ONLY the JSON object. No other text."""
 
 
-# =============================================================================
-# DATA STRUCTURES
-# =============================================================================
-
 @dataclass
 class StepRecord:
-    """Record of a single step for state memory."""
     step: int
     action: str
     target: str
-    result: str  # "URL changed to /search", "Typed 'query'", "FAILED: reason"
+    result: str
     
     def to_dict(self) -> Dict:
         return {
@@ -109,21 +87,7 @@ class StepRecord:
         return f"Step {self.step}: {self.action} {self.target} → {self.result}"
 
 
-# =============================================================================
-# OLLAMA AGENT - Main Class
-# =============================================================================
-
 class OllamaAgent:
-    """
-    Production-grade browser automation agent.
-    
-    Features:
-    - State memory (action history)
-    - Robust JSON extraction
-    - Action verification
-    - Security integration
-    - Debug mode with highlighting
-    """
     
     def __init__(
         self,
@@ -133,22 +97,15 @@ class OllamaAgent:
         enable_security: bool = True,
         debug_mode: bool = False
     ):
-        """Initialize the agent."""
         self.model = model
         self.headless = headless
         self.max_iterations = max_iterations
         self.debug_mode = debug_mode
         
-        # State Memory: Action history
-        self.history: List[StepRecord] = []
+        self.history: List[StepRecord] = []  # action history for avoiding loops
         
-        # Ollama client
-        self.client = AsyncOpenAI(
-            base_url=OLLAMA_BASE_URL,
-            api_key="ollama"
-        )
+        self.client = AsyncOpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
         
-        # Modules
         self.security = SecurityEngine(enabled=enable_security)
         self.som = BrowserIntelliSense(debug_mode=debug_mode)
         self.distiller = DOMDistiller()
@@ -164,9 +121,7 @@ class OllamaAgent:
         
         logger.info(f"OllamaAgent initialized (model={model}, debug={debug_mode})")
     
-    # =========================================================================
     # BROWSER LIFECYCLE
-    # =========================================================================
     
     async def start(self) -> None:
         """Start the browser."""
@@ -188,9 +143,7 @@ class OllamaAgent:
             logger.warning(f"Stop warning: {e}")
         logger.info("Browser stopped")
     
-    # =========================================================================
     # JSON EXTRACTION (Robust)
-    # =========================================================================
     
     def extract_json_from_text(self, response_text: str) -> Tuple[Optional[Dict], str]:
         """
@@ -224,7 +177,7 @@ class OllamaAgent:
                 except json.JSONDecodeError:
                     pass
         
-        # Strategy 3: Regex for JSON object
+        # try regex for nested json
         json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
         matches = re.findall(json_pattern, text, re.DOTALL)
         
@@ -251,9 +204,7 @@ class OllamaAgent:
         logger.warning(f"Failed to extract JSON: {text[:100]}")
         return None, "FORMAT_ERROR: Could not parse JSON"
     
-    # =========================================================================
     # STATE MEMORY
-    # =========================================================================
     
     def _format_history(self) -> str:
         """Format history for the system prompt."""
@@ -267,7 +218,6 @@ class OllamaAgent:
         return "\n".join(lines)
     
     def _add_to_history(self, action: str, target: str, result: str) -> None:
-        """Add step to history."""
         self._step += 1
         record = StepRecord(
             step=self._step,
@@ -281,9 +231,7 @@ class OllamaAgent:
         if len(self.history) > 5:
             self.history = self.history[-5:]
     
-    # =========================================================================
     # OBSERVE PHASE
-    # =========================================================================
     
     async def observe(self) -> Tuple[str, Dict[int, Any], str]:
         """
@@ -312,9 +260,7 @@ class OllamaAgent:
         except Exception as e:
             return "", {}, f"OBSERVE_ERROR: {str(e)[:100]}"
     
-    # =========================================================================
     # THINK PHASE
-    # =========================================================================
     
     async def think(
         self,
@@ -369,9 +315,7 @@ class OllamaAgent:
         except Exception as e:
             return None, f"LLM_ERROR: {str(e)[:100]}"
     
-    # =========================================================================
     # ACT PHASE
-    # =========================================================================
     
     async def act(
         self,
@@ -401,6 +345,19 @@ class OllamaAgent:
             if risk >= 90:
                 return False, f"BLOCKED: {reason}"
         
+        # Check for repeated type actions (stubborn model fix)
+        if action_type == 'type':
+            last_step = self.history[-1] if self.history else None
+            if (last_step and 
+                last_step.action == 'type' and 
+                last_step.target == f"#{target_id}"): # target is formatted as '#ID'
+                
+                logger.warning(f"Repeated type action on #{target_id}. Forcing press_enter.")
+                action_type = 'press_enter'
+                # Keep the target_id
+                action_dict['action'] = 'press_enter' # Update action_dict for execute_action
+                # No need to change target_id, press_enter can use it
+        
         # Execute via SoM
         success, message = await self.som.execute_action(
             self._page,
@@ -411,9 +368,7 @@ class OllamaAgent:
         
         return success, message
     
-    # =========================================================================
     # VERIFY PHASE
-    # =========================================================================
     
     async def verify(
         self,
@@ -447,9 +402,7 @@ class OllamaAgent:
             logger.info("   ⚠ No visible change detected")
             return False, "NO_EFFECT"
     
-    # =========================================================================
     # MAIN LOOP: Observe → Think → Act → Verify
-    # =========================================================================
     
     async def run(self, goal: str, start_url: str = "https://www.google.com") -> bool:
         """
@@ -471,8 +424,12 @@ class OllamaAgent:
         
         try:
             # Navigate to start
+            logger.info(f"Navigating to {start_url}")
             await self._page.goto(start_url, wait_until="domcontentloaded")
-            await self._page.wait_for_load_state('networkidle', timeout=5000)
+            try:
+                await self._page.wait_for_load_state('networkidle', timeout=5000)
+            except Exception:
+                logger.warning("Initial navigation wait timed out (proceeding anyway)")
             
             last_error: Optional[str] = None
             
@@ -485,14 +442,12 @@ class OllamaAgent:
                 before_url = self._page.url
                 before_hash = await self.som.get_page_hash(self._page)
                 
-                # ======== OBSERVE ========
                 elements_text, element_map, obs_error = await self.observe()
                 
                 if obs_error:
                     last_error = obs_error
                     continue
                 
-                # ======== THINK ========
                 action_dict, think_error = await self.think(
                     goal=goal,
                     elements_text=elements_text,
@@ -513,7 +468,6 @@ class OllamaAgent:
                     self._add_to_history("done", "", "Goal complete")
                     return True
                 
-                # ======== ACT ========
                 success, result = await self.act(action_dict, element_map)
                 
                 target_str = f"#{target_id}" if target_id else ""
@@ -524,7 +478,6 @@ class OllamaAgent:
                     logger.warning(f"   ✗ {result}")
                     continue
                 
-                # ======== VERIFY ========
                 page_changed, verify_msg = await self.verify(before_url, before_hash)
                 
                 if page_changed:
@@ -549,17 +502,13 @@ class OllamaAgent:
             await self.stop()
 
 
-# =============================================================================
 # CONVENIENCE ALIAS
-# =============================================================================
 
 # Alias for backward compatibility
 AgenticBrowser = OllamaAgent
 
 
-# =============================================================================
 # CLI ENTRY
-# =============================================================================
 
 async def main():
     """CLI entry point."""

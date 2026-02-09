@@ -1,14 +1,3 @@
-"""
-BrowserIntelliSense - Production-Grade SoM Implementation
-=========================================================
-Robust implementation with:
-- Overlap detection (skip covered elements)
-- Debug highlighting (red box before click)
-- Smart waits (networkidle instead of static timeouts)
-- Safe Playwright execution (no crashes)
-
-Author: Secure Agentic Browser Project
-"""
 
 import hashlib
 import logging
@@ -19,7 +8,7 @@ from playwright._impl._errors import TimeoutError as PlaywrightTimeoutError
 logger = logging.getLogger(__name__)
 
 
-# JavaScript for SoM tagging with OVERLAP DETECTION
+# SoM tagging with overlap detection
 TAGGING_SCRIPT = """
 (function() {
     // Remove any existing tags
